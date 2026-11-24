@@ -13,6 +13,12 @@ const jsonBody = z.object({
   target_export: z.string(),
 })
 
+// The soup payload is wrapped in unique markers so that any other output the
+// user code writes to stdout (console.log is common in development) does not
+// corrupt the JSON parse.
+const SOUP_JSON_START = "__TSCI_SOUP_JSON_START__"
+const SOUP_JSON_END = "__TSCI_SOUP_JSON_END__"
+
 export default withErrorHandling(async (req: Request) => {
   const { typescript_filesystem, target_export, target_filepath } =
     jsonBody.parse(await req.json())
@@ -32,7 +38,7 @@ const elements = await createRoot().render(
   projectBuilder
 )
 
-console.log(JSON.stringify(elements))
+console.log("${SOUP_JSON_START}" + JSON.stringify(elements) + "${SOUP_JSON_END}")
 
 
 
@@ -113,13 +119,29 @@ console.log(JSON.stringify(elements))
 
   const outFilePath = out.outputs[0].path
 
-  const outFileRunStdout = Bun.spawnSync({
+  const outFileRun = Bun.spawnSync({
     cmd: ["bun", outFilePath],
-  }).stdout.toString()
+  })
+  const outFileRunStdout = outFileRun.stdout.toString()
 
   console.log("stdout: ", outFileRunStdout)
 
-  const tscircuit_soup = JSON.parse(outFileRunStdout)
+  const startIdx = outFileRunStdout.lastIndexOf(SOUP_JSON_START)
+  const endIdx = outFileRunStdout.lastIndexOf(SOUP_JSON_END)
+  if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) {
+    rimrafSync(testDir)
+    const stderr = outFileRun.stderr.toString()
+    throw new Error(
+      "Compiled user code did not print a soup payload.\n\nstderr:\n" +
+        stderr.slice(-2000) +
+        "\n\nstdout:\n" +
+        outFileRunStdout.slice(-2000)
+    )
+  }
+
+  const tscircuit_soup = JSON.parse(
+    outFileRunStdout.slice(startIdx + SOUP_JSON_START.length, endIdx)
+  )
 
   rimrafSync(testDir)
 
